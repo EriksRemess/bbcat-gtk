@@ -41,8 +41,8 @@ Architecture: $architecture
 Maintainer: Ēriks Remess <eriks@remess.lv>
 Depends: $dependencies
 Homepage: https://github.com/EriksRemess/bbcat-gtk
-Description: GTK4 demo viewer for the bbcat library
- A small example application that renders ANSI and BBS artwork with bbcat.
+Description: GTK4 ANSI and BBS art viewer
+ A desktop application that renders ANSI and BBS artwork with bbcat.
 EOF
 
 output="dist/bbcat-gtk_${package_version}_${architecture}.deb"

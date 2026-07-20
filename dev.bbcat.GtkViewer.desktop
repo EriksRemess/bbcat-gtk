@@ -1,9 +1,11 @@
 [Desktop Entry]
 Type=Application
-Name=bbcat Preview
-Comment=Preview ANSI and BBS art
+Name=bbcat
+GenericName=ANSI Art Viewer
+Comment=View ANSI and BBS art
+Keywords=ANSI;ASCII;BBS;NFO;RIPscrip;
 Exec=bbcat-gtk %f
-Icon=image-x-generic
+Icon=dev.bbcat.GtkViewer
 Terminal=false
 Categories=Graphics;Viewer;
 MimeType=application/x-ansi-art;text/x-nfo;application/x-darkdraw;application/x-artworx;application/x-ripscrip;application/x-xbin;

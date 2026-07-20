@@ -22,6 +22,8 @@ struct ViewerState {
 }
 
 fn main() -> glib::ExitCode {
+    glib::set_application_name("bbcat");
+
     // HANDLES_OPEN routes command-line and desktop-entry files to `open`;
     // launching without a file uses the ordinary `activate` signal.
     let app = gtk4::Application::builder()
@@ -118,7 +120,7 @@ fn show_window(app: &gtk4::Application, path: Option<&Path>) {
 
     let window = gtk4::ApplicationWindow::builder()
         .application(app)
-        .title("bbcat GTK")
+        .title("bbcat")
         .default_width(900)
         .default_height(700)
         .titlebar(&header)
