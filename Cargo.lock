@@ -10,9 +10,9 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "bbcat"
-version = "0.5.5"
+version = "0.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b17bd09af5853704f10cd9487740941aae643817beba6846939eb58d839a1af3"
+checksum = "ada5af9f978713036ed4b0033f92d78558d3ce9ad69bf0fbbf80894acaf1ddfd"
 
 [[package]]
 name = "bbcat-gtk"
