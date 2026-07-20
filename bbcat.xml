@@ -3,6 +3,7 @@
   <mime-type type="application/x-ansi-art">
     <comment>ANSI art</comment>
     <glob pattern="*.ans"/>
+    <glob pattern="*.asc"/>
     <glob pattern="*.diz"/>
   </mime-type>
   <mime-type type="application/x-darkdraw">

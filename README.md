@@ -34,8 +34,8 @@ definitions used for file associations. To install them for the current user:
 make install PREFIX="$HOME/.local"
 ```
 
-The desktop entry associates the preview app with ANSI (`.ans`, `.diz`), NFO,
-DarkDraw (`.ddw`), ArtWorx (`.adf`), RIPscrip (`.rip`), and XBin (`.xb`,
+The desktop entry associates the preview app with ANSI (`.ans`, `.asc`, `.diz`),
+NFO, DarkDraw (`.ddw`), ArtWorx (`.adf`), RIPscrip (`.rip`), and XBin (`.xb`,
 `.xbin`) artwork. The `update-mime-database` and `update-desktop-database`
 commands are run after a direct install when they are available.
 
