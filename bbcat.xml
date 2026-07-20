@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-ansi-art">
+    <comment>ANSI art</comment>
+    <glob pattern="*.ans"/>
+    <glob pattern="*.diz"/>
+  </mime-type>
+  <mime-type type="application/x-darkdraw">
+    <comment>DarkDraw artwork</comment>
+    <glob pattern="*.ddw"/>
+  </mime-type>
+  <mime-type type="application/x-artworx">
+    <comment>ArtWorx artwork</comment>
+    <glob pattern="*.adf"/>
+  </mime-type>
+  <mime-type type="application/x-ripscrip">
+    <comment>RIPscrip artwork</comment>
+    <glob pattern="*.rip"/>
+  </mime-type>
+  <mime-type type="application/x-xbin">
+    <comment>XBin artwork</comment>
+    <glob pattern="*.xb"/>
+    <glob pattern="*.xbin"/>
+  </mime-type>
+</mime-info>

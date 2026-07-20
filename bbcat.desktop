@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=bbcat Preview
+Comment=Preview ANSI and BBS art
+Exec=bbcat-gtk %f
+Icon=image-x-generic
+Terminal=false
+Categories=Graphics;Viewer;
+MimeType=application/x-ansi-art;text/x-nfo;application/x-darkdraw;application/x-artworx;application/x-ripscrip;application/x-xbin;
+StartupNotify=true

@@ -1,0 +1,8 @@
+[package]
+name = "bbcat-gtk"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bbcat = "0.5.5"
+gtk4 = { version = "0.11.1", features = ["v4_8"] }
