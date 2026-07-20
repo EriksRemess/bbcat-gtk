@@ -4,9 +4,22 @@
 //! screens become one GTK texture, and animations replace that texture from a
 //! GTK main-loop timer.
 
-use std::{cell::Cell, path::Path, rc::Rc, time::Duration};
+use std::{
+    cell::{Cell, RefCell},
+    path::Path,
+    rc::Rc,
+    time::Duration,
+};
 
 use gtk4::{gdk, gio, glib, prelude::*};
+
+#[derive(Clone)]
+struct ViewerState {
+    playback: Rc<Cell<u64>>,
+    native_size: Rc<Cell<Option<(i32, i32)>>>,
+    document: Rc<RefCell<Option<Rc<bbcat::Document>>>>,
+    scale: Rc<Cell<usize>>,
+}
 
 fn main() -> glib::ExitCode {
     // HANDLES_OPEN routes command-line and desktop-entry files to `open`;
@@ -48,10 +61,13 @@ fn show_window(app: &gtk4::Application, path: Option<&Path>) {
         .build();
     // Each load receives a generation number. Old animation timers become
     // harmless as soon as a newer file increments it.
-    let playback = Rc::new(Cell::new(0_u64));
-    // In native-size scrolling mode this records the artwork size. It is used
-    // below to center the non-scrolling axis within the visible viewport.
-    let native_size = Rc::new(Cell::new(None));
+    let state = ViewerState {
+        playback: Rc::new(Cell::new(0_u64)),
+        // Native-size mode uses this to center the axis that does not scroll.
+        native_size: Rc::new(Cell::new(None)),
+        document: Rc::new(RefCell::new(None)),
+        scale: Rc::new(Cell::new(1)),
+    };
     // Centering uses child coordinates instead of margins, keeping the scroll
     // origin stable while GTK is showing or hiding scrollbars.
     let canvas = gtk4::Fixed::builder().hexpand(true).vexpand(true).build();
@@ -71,7 +87,7 @@ fn show_window(app: &gtk4::Application, path: Option<&Path>) {
         let picture = picture.downgrade();
         let canvas = canvas.downgrade();
         let scroller = scroller.downgrade();
-        let native_size = native_size.clone();
+        let native_size = state.native_size.clone();
         adjustment.connect_page_size_notify(move |_| {
             if let (Some(picture), Some(canvas), Some(scroller)) =
                 (picture.upgrade(), canvas.upgrade(), scroller.upgrade())
@@ -83,7 +99,7 @@ fn show_window(app: &gtk4::Application, path: Option<&Path>) {
     for property in ["width", "height"] {
         let picture = picture.downgrade();
         let canvas = canvas.downgrade();
-        let native_size = native_size.clone();
+        let native_size = state.native_size.clone();
         scroller.connect_notify_local(Some(property), move |scroller, _| {
             if let (Some(picture), Some(canvas)) = (picture.upgrade(), canvas.upgrade()) {
                 update_content_layout(&picture, &canvas, scroller, native_size.get());
@@ -100,6 +116,21 @@ fn show_window(app: &gtk4::Application, path: Option<&Path>) {
         .build();
     let header = gtk4::HeaderBar::new();
     header.pack_start(&open_button);
+    let scale_1 = gtk4::ToggleButton::builder()
+        .label("×1")
+        .tooltip_text("Render at original size")
+        .active(true)
+        .build();
+    let scale_2 = gtk4::ToggleButton::builder()
+        .label("×2")
+        .tooltip_text("Render at double size")
+        .group(&scale_1)
+        .build();
+    let scale_buttons = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    scale_buttons.add_css_class("linked");
+    scale_buttons.append(&scale_1);
+    scale_buttons.append(&scale_2);
+    header.pack_end(&scale_buttons);
 
     let window = gtk4::ApplicationWindow::builder()
         .application(app)
@@ -110,6 +141,44 @@ fn show_window(app: &gtk4::Application, path: Option<&Path>) {
         .child(&viewer)
         .build();
 
+    // Grouped toggle buttons behave like a two-choice scale selector. bbcat
+    // performs the integer scaling, keeping text-mode pixels crisp.
+    for (button, selected_scale) in [(scale_1, 1), (scale_2, 2)] {
+        let window = window.downgrade();
+        let picture = picture.downgrade();
+        let canvas = canvas.downgrade();
+        let scroller = scroller.downgrade();
+        let state = state.clone();
+        button.connect_toggled(move |button| {
+            if !button.is_active() {
+                return;
+            }
+            state.scale.set(selected_scale);
+            let Some(document) = state.document.borrow().clone() else {
+                return;
+            };
+            let (Some(window), Some(picture), Some(canvas), Some(scroller)) = (
+                window.upgrade(),
+                picture.upgrade(),
+                canvas.upgrade(),
+                scroller.upgrade(),
+            ) else {
+                return;
+            };
+            if let Err(error) = display_document(
+                document,
+                selected_scale,
+                &window,
+                &picture,
+                &canvas,
+                &scroller,
+                &state,
+            ) {
+                show_error(&window, &error);
+            }
+        });
+    }
+
     open_button.connect_clicked({
         // Signal handlers live on their widgets. Weak references avoid keeping
         // the complete window hierarchy alive after the window is closed.
@@ -117,8 +186,7 @@ fn show_window(app: &gtk4::Application, path: Option<&Path>) {
         let picture = picture.downgrade();
         let canvas = canvas.downgrade();
         let scroller = scroller.downgrade();
-        let playback = playback.clone();
-        let native_size = native_size.clone();
+        let state = state.clone();
         move |_| {
             if let (Some(window), Some(picture), Some(canvas), Some(scroller)) = (
                 window.upgrade(),
@@ -126,14 +194,7 @@ fn show_window(app: &gtk4::Application, path: Option<&Path>) {
                 canvas.upgrade(),
                 scroller.upgrade(),
             ) {
-                choose_file(
-                    &window,
-                    &picture,
-                    &canvas,
-                    &scroller,
-                    &playback,
-                    &native_size,
-                );
+                choose_file(&window, &picture, &canvas, &scroller, &state);
             }
         }
     });
@@ -141,15 +202,7 @@ fn show_window(app: &gtk4::Application, path: Option<&Path>) {
     window.present();
 
     if let Some(path) = path {
-        load_file(
-            path,
-            &window,
-            &picture,
-            &canvas,
-            &scroller,
-            &playback,
-            &native_size,
-        );
+        load_file(path, &window, &picture, &canvas, &scroller, &state);
     }
 }
 
@@ -158,8 +211,7 @@ fn choose_file(
     picture: &gtk4::Picture,
     canvas: &gtk4::Fixed,
     scroller: &gtk4::ScrolledWindow,
-    playback: &Rc<Cell<u64>>,
-    native_size: &Rc<Cell<Option<(i32, i32)>>>,
+    state: &ViewerState,
 ) {
     // FileChooserNative uses the desktop's preferred chooser rather than a
     // custom GTK file-browser window.
@@ -177,21 +229,12 @@ fn choose_file(
         let picture = picture.clone();
         let canvas = canvas.clone();
         let scroller = scroller.clone();
-        let playback = playback.clone();
-        let native_size = native_size.clone();
+        let state = state.clone();
         move |chooser, response| {
             if response == gtk4::ResponseType::Accept
                 && let Some(path) = chooser.file().and_then(|file| file.path())
             {
-                load_file(
-                    &path,
-                    &window,
-                    &picture,
-                    &canvas,
-                    &scroller,
-                    &playback,
-                    &native_size,
-                );
+                load_file(&path, &window, &picture, &canvas, &scroller, &state);
             }
             chooser.destroy();
         }
@@ -205,13 +248,11 @@ fn load_file(
     picture: &gtk4::Picture,
     canvas: &gtk4::Fixed,
     scroller: &gtk4::ScrolledWindow,
-    playback: &Rc<Cell<u64>>,
-    native_size: &Rc<Cell<Option<(i32, i32)>>>,
+    state: &ViewerState,
 ) {
     // Invalidating the previous generation stops its next timer callback from
     // scheduling another animation frame.
-    let generation = playback.get().wrapping_add(1);
-    playback.set(generation);
+    state.playback.set(state.playback.get().wrapping_add(1));
 
     let result = std::fs::read(path)
         .map_err(|error| error.to_string())
@@ -227,7 +268,7 @@ fn load_file(
             )
             .map_err(|error| error.to_string())
         })
-        .and_then(|document| {
+        .map(|document| {
             // SAUCE metadata is presentation data here; bbcat has already
             // decoded its fixed-width CP437 fields into Rust strings.
             let (sauce_title, sauce_details) = document.sauce.as_ref().map_or_else(
@@ -244,40 +285,16 @@ fn load_file(
                     (title, details)
                 },
             );
-            render_document(document).map(|rendered| (rendered, sauce_title, sauce_details))
+            (document, sauce_title, sauce_details)
         });
 
-    let (rendered, sauce_title, sauce_details) = match result {
+    let (document, sauce_title, sauce_details) = match result {
         Ok(result) => result,
         Err(error) => {
             show_error(window, &error);
             return;
         }
     };
-    let content_size = match rendered {
-        Rendered::Static(texture) => {
-            let size = (texture.width(), texture.height());
-            picture.set_paintable(Some(&texture));
-            size
-        }
-        Rendered::Animation(frames) => {
-            match show_animation_frame(
-                picture,
-                frames,
-                playback.clone(),
-                generation,
-                0,
-                window.downgrade(),
-            ) {
-                Ok(size) => size,
-                Err(error) => {
-                    show_error(window, &error);
-                    return;
-                }
-            }
-        }
-    };
-
     let title = sauce_title.unwrap_or_else(|| {
         path.file_name()
             .and_then(|name| name.to_str())
@@ -290,7 +307,50 @@ fn load_file(
         format!("{title} — {}", sauce_details.join(" · "))
     };
     window.set_title(Some(&title));
-    let scrollbars = fit_window_to_content(window, content_size.0, content_size.1);
+    let document = Rc::new(document);
+    if let Err(error) = display_document(
+        document.clone(),
+        state.scale.get(),
+        window,
+        picture,
+        canvas,
+        scroller,
+        state,
+    ) {
+        show_error(window, &error);
+        return;
+    }
+    *state.document.borrow_mut() = Some(document);
+}
+
+fn display_document(
+    document: Rc<bbcat::Document>,
+    scale: usize,
+    window: &gtk4::ApplicationWindow,
+    picture: &gtk4::Picture,
+    canvas: &gtk4::Fixed,
+    scroller: &gtk4::ScrolledWindow,
+    state: &ViewerState,
+) -> Result<(), String> {
+    let generation = state.playback.get().wrapping_add(1);
+    state.playback.set(generation);
+    let content_size = match render_document(document.clone(), scale)? {
+        Rendered::Static(texture) => {
+            let size = (texture.width(), texture.height());
+            picture.set_paintable(Some(&texture));
+            size
+        }
+        Rendered::Animation(document) => show_animation_frame(
+            picture,
+            document,
+            scale,
+            state.playback.clone(),
+            generation,
+            0,
+            window.downgrade(),
+        )?,
+    };
+    let (window_size, scrollbars) = window_fit_for_content(window, content_size.0, content_size.1);
     configure_content_view(
         picture,
         canvas,
@@ -298,28 +358,38 @@ fn load_file(
         scrollbars,
         content_size.0,
         content_size.1,
-        native_size,
+        &state.native_size,
     );
+    // Request the window size after removing the previous scale's larger
+    // widget requests, otherwise GTK cannot shrink from ×2 back to ×1.
+    let shrinking = window_size.0 < window.width() || window_size.1 < window.height();
+    window.set_default_size(window_size.0, window_size.1);
+    // During a shrink, the allocation notification reapplies centering after
+    // the compositor accepts the smaller size. Expanding can be laid out now.
+    if !shrinking || window.is_maximized() || window.is_fullscreen() {
+        update_content_layout(picture, canvas, scroller, state.native_size.get());
+    }
+    Ok(())
 }
 
 enum Rendered {
     // Both variants describe what GTK needs after bbcat has decoded the input.
     Static(gdk::Texture),
-    Animation(Rc<Vec<bbcat::AnimationFrame>>),
+    Animation(Rc<bbcat::Document>),
 }
 
-fn render_document(mut document: bbcat::Document) -> Result<Rendered, String> {
+fn render_document(document: Rc<bbcat::Document>, scale: usize) -> Result<Rendered, String> {
     // Retain decoded screens rather than pre-rendering every texture. Large
     // animations would otherwise consume width * height * 4 bytes per frame.
-    if let Some(animation) = document.animation.take()
+    if let Some(animation) = document.animation.as_ref()
         && !animation.frames.is_empty()
     {
-        return Ok(Rendered::Animation(Rc::new(animation.frames)));
+        return Ok(Rendered::Animation(document));
     }
 
     // Static documents can use bbcat's high-level PNG convenience method.
     document
-        .encode_png(1)
+        .encode_png(scale)
         .map_err(|error| error.to_string())
         .and_then(texture_from_png)
         .map(Rendered::Static)
@@ -356,7 +426,8 @@ fn format_sauce_date(date: &str) -> String {
 
 fn show_animation_frame(
     picture: &gtk4::Picture,
-    frames: Rc<Vec<bbcat::AnimationFrame>>,
+    document: Rc<bbcat::Document>,
+    scale: usize,
     playback: Rc<Cell<u64>>,
     generation: u64,
     index: usize,
@@ -368,8 +439,13 @@ fn show_animation_frame(
     }
 
     // Rendering only the current screen keeps the texture working set small.
+    let frames = &document
+        .animation
+        .as_ref()
+        .expect("animated render requires animation frames")
+        .frames;
     let frame = &frames[index];
-    let png = bbcat::encode_screen(&frame.screen, 0, frame.screen.height)?;
+    let png = bbcat::encode_screen_scaled(&frame.screen, 0, frame.screen.height, scale)?;
     let texture = texture_from_png(png)?;
     let size = (texture.width(), texture.height());
     picture.set_paintable(Some(&texture));
@@ -381,9 +457,15 @@ fn show_animation_frame(
     glib::timeout_add_local_once(delay, move || {
         if let Some(picture) = picture.upgrade() {
             let next_window = window.clone();
-            if let Err(error) =
-                show_animation_frame(&picture, frames, playback, generation, next, next_window)
-                && let Some(window) = window.upgrade()
+            if let Err(error) = show_animation_frame(
+                &picture,
+                document,
+                scale,
+                playback,
+                generation,
+                next,
+                next_window,
+            ) && let Some(window) = window.upgrade()
             {
                 show_error(&window, &error);
             }
@@ -392,11 +474,11 @@ fn show_animation_frame(
     Ok(size)
 }
 
-fn fit_window_to_content(
+fn window_fit_for_content(
     window: &gtk4::ApplicationWindow,
     content_width: i32,
     content_height: i32,
-) -> (bool, bool) {
+) -> ((i32, i32), (bool, bool)) {
     // GDK monitor geometry is in the same logical units used by GTK widget
     // sizes, including on scaled displays.
     let titlebar_height = window
@@ -411,20 +493,22 @@ fn fit_window_to_content(
             (geometry.width(), geometry.height())
         })
         .unwrap_or((1200, 800));
-    let (width, height) = fitted_window_size(
+    let size = fitted_window_size(
         content_width,
         content_height,
         titlebar_height,
         monitor_size.0,
         monitor_size.1,
     );
-    window.set_default_size(width, height);
-    required_scrollbars(
-        content_width,
-        content_height,
-        titlebar_height,
-        monitor_size.0,
-        monitor_size.1,
+    (
+        size,
+        required_scrollbars(
+            content_width,
+            content_height,
+            titlebar_height,
+            monitor_size.0,
+            monitor_size.1,
+        ),
     )
 }
 
@@ -439,6 +523,21 @@ fn configure_content_view(
 ) {
     let (horizontal_scrollbar, vertical_scrollbar) = scrollbars;
     if horizontal_scrollbar || vertical_scrollbar {
+        scroller.set_policy(
+            if horizontal_scrollbar {
+                gtk4::PolicyType::Automatic
+            } else {
+                gtk4::PolicyType::Never
+            },
+            if vertical_scrollbar {
+                gtk4::PolicyType::Automatic
+            } else {
+                gtk4::PolicyType::Never
+            },
+        );
+        // Start from the artwork's natural size. Centering expands the fitting
+        // axis only after the top-level window has accepted its new size.
+        canvas.set_size_request(content_width, content_height);
         picture.set_size_request(content_width, content_height);
         picture.set_can_shrink(false);
         native_size.set(Some((content_width, content_height)));
@@ -447,9 +546,10 @@ fn configure_content_view(
         // picture to the viewport for aspect-preserving ContentFit letterboxing.
         scroller.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Never);
         native_size.set(None);
+        canvas.set_size_request(-1, -1);
+        picture.set_size_request(-1, -1);
         picture.set_can_shrink(true);
     }
-    update_content_layout(picture, canvas, scroller, native_size.get());
 }
 
 fn update_content_layout(

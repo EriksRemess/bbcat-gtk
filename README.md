@@ -7,9 +7,11 @@ image in a GTK4 window.
 
 This is currently a library demo, not a full-featured art viewer. It has a file
 chooser, supports opening a file from the command line or desktop, and plays
-animations at `bbcat`'s default speed. The window follows the rendered content
-size up to the available monitor space. Artwork scales with the window while
-preserving its aspect ratio, with black letterboxing around unused space.
+animations at `bbcat`'s default speed. The `×1` and `×2` buttons select bbcat's
+integer PNG rendering scale. A normal window follows the rendered content size
+up to the available monitor space.
+Artwork scales with the window while preserving its aspect ratio, with black
+letterboxing around unused space.
 Artwork taller or wider than the monitor instead remains at native size and
 stays centered on any axis that fits; only the overflowing axes get scrollbars.
 SAUCE titles, authors, and dates are shown in the window title when available.
