@@ -68,10 +68,6 @@ fn show_window(app: &gtk4::Application, path: Option<&Path>) {
         document: Rc::new(RefCell::new(None)),
         scale: Rc::new(Cell::new(1)),
     };
-    // Centering uses child coordinates instead of margins, keeping the scroll
-    // origin stable while GTK is showing or hiding scrollbars.
-    let canvas = gtk4::Fixed::builder().hexpand(true).vexpand(true).build();
-    canvas.put(&picture, 0.0, 0.0);
     // Scrollbars start disabled for aspect-fit mode and are enabled only when
     // the artwork is larger than the monitor.
     let scroller = gtk4::ScrolledWindow::builder()
@@ -80,35 +76,23 @@ fn show_window(app: &gtk4::Application, path: Option<&Path>) {
         .overlay_scrolling(false)
         .hexpand(true)
         .vexpand(true)
-        .child(&canvas)
+        .child(&picture)
         .build();
-    // Recalculate the canvas whenever resizing or scrollbar layout changes.
-    for adjustment in [scroller.hadjustment(), scroller.vadjustment()] {
-        let picture = picture.downgrade();
-        let canvas = canvas.downgrade();
+    // Overlay gives the scroller the entire black viewing area for alignment,
+    // while leaving its natural size out of the window's minimum size.
+    let viewer = gtk4::Overlay::builder().hexpand(true).vexpand(true).build();
+    viewer.add_css_class("artwork");
+    viewer.add_overlay(&scroller);
+    for property in ["width", "height"] {
+        let viewer_weak = viewer.downgrade();
         let scroller = scroller.downgrade();
         let native_size = state.native_size.clone();
-        adjustment.connect_page_size_notify(move |_| {
-            if let (Some(picture), Some(canvas), Some(scroller)) =
-                (picture.upgrade(), canvas.upgrade(), scroller.upgrade())
-            {
-                update_content_layout(&picture, &canvas, &scroller, native_size.get());
+        viewer.connect_notify_local(Some(property), move |_, _| {
+            if let (Some(viewer), Some(scroller)) = (viewer_weak.upgrade(), scroller.upgrade()) {
+                update_content_layout(&viewer, &scroller, native_size.get());
             }
         });
     }
-    for property in ["width", "height"] {
-        let picture = picture.downgrade();
-        let canvas = canvas.downgrade();
-        let native_size = state.native_size.clone();
-        scroller.connect_notify_local(Some(property), move |scroller, _| {
-            if let (Some(picture), Some(canvas)) = (picture.upgrade(), canvas.upgrade()) {
-                update_content_layout(&picture, &canvas, scroller, native_size.get());
-            }
-        });
-    }
-    let viewer = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-    viewer.add_css_class("artwork");
-    viewer.append(&scroller);
 
     let open_button = gtk4::Button::builder()
         .icon_name("document-open-symbolic")
@@ -146,7 +130,7 @@ fn show_window(app: &gtk4::Application, path: Option<&Path>) {
     for (button, selected_scale) in [(scale_1, 1), (scale_2, 2)] {
         let window = window.downgrade();
         let picture = picture.downgrade();
-        let canvas = canvas.downgrade();
+        let viewer = viewer.downgrade();
         let scroller = scroller.downgrade();
         let state = state.clone();
         button.connect_toggled(move |button| {
@@ -157,10 +141,10 @@ fn show_window(app: &gtk4::Application, path: Option<&Path>) {
             let Some(document) = state.document.borrow().clone() else {
                 return;
             };
-            let (Some(window), Some(picture), Some(canvas), Some(scroller)) = (
+            let (Some(window), Some(picture), Some(viewer), Some(scroller)) = (
                 window.upgrade(),
                 picture.upgrade(),
-                canvas.upgrade(),
+                viewer.upgrade(),
                 scroller.upgrade(),
             ) else {
                 return;
@@ -170,7 +154,7 @@ fn show_window(app: &gtk4::Application, path: Option<&Path>) {
                 selected_scale,
                 &window,
                 &picture,
-                &canvas,
+                &viewer,
                 &scroller,
                 &state,
             ) {
@@ -184,17 +168,17 @@ fn show_window(app: &gtk4::Application, path: Option<&Path>) {
         // the complete window hierarchy alive after the window is closed.
         let window = window.downgrade();
         let picture = picture.downgrade();
-        let canvas = canvas.downgrade();
+        let viewer = viewer.downgrade();
         let scroller = scroller.downgrade();
         let state = state.clone();
         move |_| {
-            if let (Some(window), Some(picture), Some(canvas), Some(scroller)) = (
+            if let (Some(window), Some(picture), Some(viewer), Some(scroller)) = (
                 window.upgrade(),
                 picture.upgrade(),
-                canvas.upgrade(),
+                viewer.upgrade(),
                 scroller.upgrade(),
             ) {
-                choose_file(&window, &picture, &canvas, &scroller, &state);
+                choose_file(&window, &picture, &viewer, &scroller, &state);
             }
         }
     });
@@ -202,14 +186,14 @@ fn show_window(app: &gtk4::Application, path: Option<&Path>) {
     window.present();
 
     if let Some(path) = path {
-        load_file(path, &window, &picture, &canvas, &scroller, &state);
+        load_file(path, &window, &picture, &viewer, &scroller, &state);
     }
 }
 
 fn choose_file(
     window: &gtk4::ApplicationWindow,
     picture: &gtk4::Picture,
-    canvas: &gtk4::Fixed,
+    viewer: &gtk4::Overlay,
     scroller: &gtk4::ScrolledWindow,
     state: &ViewerState,
 ) {
@@ -227,14 +211,14 @@ fn choose_file(
     chooser.connect_response({
         let window = window.clone();
         let picture = picture.clone();
-        let canvas = canvas.clone();
+        let viewer = viewer.clone();
         let scroller = scroller.clone();
         let state = state.clone();
         move |chooser, response| {
             if response == gtk4::ResponseType::Accept
                 && let Some(path) = chooser.file().and_then(|file| file.path())
             {
-                load_file(&path, &window, &picture, &canvas, &scroller, &state);
+                load_file(&path, &window, &picture, &viewer, &scroller, &state);
             }
             chooser.destroy();
         }
@@ -246,7 +230,7 @@ fn load_file(
     path: &Path,
     window: &gtk4::ApplicationWindow,
     picture: &gtk4::Picture,
-    canvas: &gtk4::Fixed,
+    viewer: &gtk4::Overlay,
     scroller: &gtk4::ScrolledWindow,
     state: &ViewerState,
 ) {
@@ -313,7 +297,7 @@ fn load_file(
         state.scale.get(),
         window,
         picture,
-        canvas,
+        viewer,
         scroller,
         state,
     ) {
@@ -328,7 +312,7 @@ fn display_document(
     scale: usize,
     window: &gtk4::ApplicationWindow,
     picture: &gtk4::Picture,
-    canvas: &gtk4::Fixed,
+    viewer: &gtk4::Overlay,
     scroller: &gtk4::ScrolledWindow,
     state: &ViewerState,
 ) -> Result<(), String> {
@@ -353,7 +337,7 @@ fn display_document(
     let (window_size, scrollbars) = window_fit_for_content(window, content_size.0, content_size.1);
     configure_content_view(
         picture,
-        canvas,
+        viewer,
         scroller,
         scrollbars,
         content_size.0,
@@ -362,13 +346,7 @@ fn display_document(
     );
     // Request the window size after removing the previous scale's larger
     // widget requests, otherwise GTK cannot shrink from ×2 back to ×1.
-    let shrinking = window_size.0 < window.width() || window_size.1 < window.height();
     window.set_default_size(window_size.0, window_size.1);
-    // During a shrink, the allocation notification reapplies centering after
-    // the compositor accepts the smaller size. Expanding can be laid out now.
-    if !shrinking || window.is_maximized() || window.is_fullscreen() {
-        update_content_layout(picture, canvas, scroller, state.native_size.get());
-    }
     Ok(())
 }
 
@@ -514,7 +492,7 @@ fn window_fit_for_content(
 
 fn configure_content_view(
     picture: &gtk4::Picture,
-    canvas: &gtk4::Fixed,
+    viewer: &gtk4::Overlay,
     scroller: &gtk4::ScrolledWindow,
     scrollbars: (bool, bool),
     content_width: i32,
@@ -523,101 +501,81 @@ fn configure_content_view(
 ) {
     let (horizontal_scrollbar, vertical_scrollbar) = scrollbars;
     if horizontal_scrollbar || vertical_scrollbar {
-        scroller.set_policy(
-            if horizontal_scrollbar {
-                gtk4::PolicyType::Automatic
-            } else {
-                gtk4::PolicyType::Never
-            },
-            if vertical_scrollbar {
-                gtk4::PolicyType::Automatic
-            } else {
-                gtk4::PolicyType::Never
-            },
-        );
-        // Start from the artwork's natural size. Centering expands the fitting
-        // axis only after the top-level window has accepted its new size.
-        canvas.set_size_request(content_width, content_height);
+        // The scroller always fills the window so its bars stay on the window
+        // edges. The picture, rather than the scroller, is centered on an axis
+        // where the native-size artwork fits.
+        scroller.set_propagate_natural_width(false);
+        scroller.set_propagate_natural_height(false);
+        scroller.set_halign(gtk4::Align::Fill);
+        scroller.set_valign(gtk4::Align::Fill);
+        scroller.set_hexpand(true);
+        scroller.set_vexpand(true);
         picture.set_size_request(content_width, content_height);
         picture.set_can_shrink(false);
+        picture.set_halign(gtk4::Align::Center);
+        picture.set_valign(gtk4::Align::Center);
+        picture.set_hexpand(false);
+        picture.set_vexpand(false);
         native_size.set(Some((content_width, content_height)));
     } else {
-        // Responsive mode disables scrolling; update_content_layout sizes the
-        // picture to the viewport for aspect-preserving ContentFit letterboxing.
+        // Responsive mode fills the resizable viewer. Picture handles the
+        // aspect-preserving scale and letterboxing without a size request.
         scroller.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Never);
+        scroller.set_propagate_natural_width(false);
+        scroller.set_propagate_natural_height(false);
+        scroller.set_halign(gtk4::Align::Fill);
+        scroller.set_valign(gtk4::Align::Fill);
+        scroller.set_hexpand(true);
+        scroller.set_vexpand(true);
         native_size.set(None);
-        canvas.set_size_request(-1, -1);
         picture.set_size_request(-1, -1);
         picture.set_can_shrink(true);
+        picture.set_halign(gtk4::Align::Fill);
+        picture.set_valign(gtk4::Align::Fill);
+        picture.set_hexpand(true);
+        picture.set_vexpand(true);
     }
+    update_content_layout(viewer, scroller, native_size.get());
 }
 
 fn update_content_layout(
-    picture: &gtk4::Picture,
-    canvas: &gtk4::Fixed,
+    viewer: &gtk4::Overlay,
     scroller: &gtk4::ScrolledWindow,
     native_size: Option<(i32, i32)>,
 ) {
-    // Choose scrollbar axes ourselves. GtkFixed's changing visible child area
-    // must not make GTK invent a cross-axis scrollbar while scrolling.
+    let Some((content_width, content_height)) = native_size else {
+        return;
+    };
+    // Choose scrollbar axes from the full viewer allocation, independently of
+    // the picture's native size.
     let vertical_scrollbar = scroller.vscrollbar();
     let horizontal_scrollbar = scroller.hscrollbar();
-
-    if let Some((content_width, content_height)) = native_size {
-        let scrollbar_width = vertical_scrollbar
-            .measure(gtk4::Orientation::Horizontal, -1)
-            .1;
-        let scrollbar_height = horizontal_scrollbar
-            .measure(gtk4::Orientation::Vertical, -1)
-            .1;
-        let scrollbars = viewport_scrollbars(
-            content_width,
-            content_height,
-            scroller.width(),
-            scroller.height(),
-            scrollbar_width,
-            scrollbar_height,
-        );
-        scroller.set_policy(
-            if scrollbars.0 {
-                gtk4::PolicyType::Automatic
-            } else {
-                gtk4::PolicyType::Never
-            },
-            if scrollbars.1 {
-                gtk4::PolicyType::Automatic
-            } else {
-                gtk4::PolicyType::Never
-            },
-        );
-        let viewport_width = scroller
-            .width()
-            .saturating_sub(if scrollbars.1 { scrollbar_width } else { 0 })
-            .max(1);
-        let viewport_height = scroller
-            .height()
-            .saturating_sub(if scrollbars.0 { scrollbar_height } else { 0 })
-            .max(1);
-        // An overflowing axis grows beyond the viewport and scrolls. A fitting
-        // axis matches the viewport and places the artwork in its center.
-        canvas.set_size_request(
-            content_width.max(viewport_width),
-            content_height.max(viewport_height),
-        );
-        picture.set_size_request(content_width, content_height);
-        canvas.move_(
-            picture,
-            f64::from(viewport_width.saturating_sub(content_width).max(0) / 2),
-            f64::from(viewport_height.saturating_sub(content_height).max(0) / 2),
-        );
-    } else {
-        // Picture performs aspect-preserving scaling within the whole viewport.
-        let viewport_width = scroller.width().max(1);
-        let viewport_height = scroller.height().max(1);
-        canvas.set_size_request(viewport_width, viewport_height);
-        picture.set_size_request(viewport_width, viewport_height);
-        canvas.move_(picture, 0.0, 0.0);
-    }
+    let scrollbar_width = vertical_scrollbar
+        .measure(gtk4::Orientation::Horizontal, -1)
+        .1;
+    let scrollbar_height = horizontal_scrollbar
+        .measure(gtk4::Orientation::Vertical, -1)
+        .1;
+    let scrollbars = viewport_scrollbars(
+        content_width,
+        content_height,
+        viewer.width(),
+        viewer.height(),
+        scrollbar_width,
+        scrollbar_height,
+    );
+    scroller.set_policy(
+        if scrollbars.0 {
+            gtk4::PolicyType::Automatic
+        } else {
+            gtk4::PolicyType::Never
+        },
+        if scrollbars.1 {
+            gtk4::PolicyType::Automatic
+        } else {
+            gtk4::PolicyType::Never
+        },
+    );
 }
 
 fn viewport_scrollbars(
