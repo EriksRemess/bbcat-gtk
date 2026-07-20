@@ -2,7 +2,8 @@
 
 `bbcat-gtk` is a small GTK4 demonstration app for the
 [`bbcat`](https://crates.io/crates/bbcat) Rust library. It opens ANSI and BBS
-art with `bbcat`, renders it as an image, and displays it in a GTK4 window.
+art with `bbcat`, including 256-color ANSI animations, and displays the rendered
+image in a GTK4 window.
 
 This is currently a library demo, not a full-featured art viewer. It has a file
 chooser, supports opening a file from the command line or desktop, and plays

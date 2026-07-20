@@ -1,14 +1,24 @@
+//! A minimal GTK4 front end for the `bbcat` library.
+//!
+//! Files follow one pipeline: `bbcat` decodes them into a `Document`, static
+//! screens become one GTK texture, and animations replace that texture from a
+//! GTK main-loop timer.
+
 use std::{cell::Cell, path::Path, rc::Rc, time::Duration};
 
 use gtk4::{gdk, gio, glib, prelude::*};
 
 fn main() -> glib::ExitCode {
+    // HANDLES_OPEN routes command-line and desktop-entry files to `open`;
+    // launching without a file uses the ordinary `activate` signal.
     let app = gtk4::Application::builder()
         .application_id("dev.bbcat.GtkViewer")
         .flags(gio::ApplicationFlags::HANDLES_OPEN)
         .build();
 
     app.connect_startup(|_| {
+        // The containing widget remains visible as black letterboxing whenever
+        // the picture and window have different aspect ratios.
         let provider = gtk4::CssProvider::new();
         provider.load_from_data(".artwork { background-color: black; }");
         if let Some(display) = gdk::Display::default() {
@@ -28,13 +38,19 @@ fn main() -> glib::ExitCode {
 }
 
 fn show_window(app: &gtk4::Application, path: Option<&Path>) {
+    // Contain preserves the rendered pixel aspect ratio when the picture is in
+    // responsive mode. Oversized art switches to native-size scrolling below.
     let picture = gtk4::Picture::builder()
         .can_shrink(true)
         .content_fit(gtk4::ContentFit::Contain)
         .hexpand(true)
         .vexpand(true)
         .build();
+    // Each load receives a generation number. Old animation timers become
+    // harmless as soon as a newer file increments it.
     let playback = Rc::new(Cell::new(0_u64));
+    // Scrollbars start disabled for aspect-fit mode and are enabled only when
+    // the artwork is larger than the monitor.
     let scroller = gtk4::ScrolledWindow::builder()
         .hscrollbar_policy(gtk4::PolicyType::Never)
         .vscrollbar_policy(gtk4::PolicyType::Never)
@@ -64,6 +80,8 @@ fn show_window(app: &gtk4::Application, path: Option<&Path>) {
         .build();
 
     open_button.connect_clicked({
+        // Signal handlers live on their widgets. Weak references avoid keeping
+        // the complete window hierarchy alive after the window is closed.
         let window = window.downgrade();
         let picture = picture.downgrade();
         let scroller = scroller.downgrade();
@@ -90,6 +108,8 @@ fn choose_file(
     scroller: &gtk4::ScrolledWindow,
     playback: &Rc<Cell<u64>>,
 ) {
+    // FileChooserNative uses the desktop's preferred chooser rather than a
+    // custom GTK file-browser window.
     let chooser = gtk4::FileChooserNative::builder()
         .title("Open ANSI art")
         .transient_for(window)
@@ -123,12 +143,16 @@ fn load_file(
     scroller: &gtk4::ScrolledWindow,
     playback: &Rc<Cell<u64>>,
 ) {
+    // Invalidating the previous generation stops its next timer callback from
+    // scheduling another animation frame.
     let generation = playback.get().wrapping_add(1);
     playback.set(generation);
 
     let result = std::fs::read(path)
         .map_err(|error| error.to_string())
         .and_then(|data| {
+            // The filename lets bbcat use extension hints for formats whose
+            // contents alone are ambiguous, such as ADF, DDW, and RIPscrip.
             bbcat::decode_with_options(
                 &data,
                 bbcat::DecodeOptions {
@@ -139,6 +163,8 @@ fn load_file(
             .map_err(|error| error.to_string())
         })
         .and_then(|document| {
+            // SAUCE metadata is presentation data here; bbcat has already
+            // decoded its fixed-width CP437 fields into Rust strings.
             let (sauce_title, sauce_details) = document.sauce.as_ref().map_or_else(
                 || (None, Vec::new()),
                 |sauce| {
@@ -210,17 +236,21 @@ fn load_file(
 }
 
 enum Rendered {
+    // Both variants describe what GTK needs after bbcat has decoded the input.
     Static(gdk::Texture),
     Animation(Rc<Vec<bbcat::AnimationFrame>>),
 }
 
 fn render_document(mut document: bbcat::Document) -> Result<Rendered, String> {
+    // Retain decoded screens rather than pre-rendering every texture. Large
+    // animations would otherwise consume width * height * 4 bytes per frame.
     if let Some(animation) = document.animation.take()
         && !animation.frames.is_empty()
     {
         return Ok(Rendered::Animation(Rc::new(animation.frames)));
     }
 
+    // Static documents can use bbcat's high-level PNG convenience method.
     document
         .encode_png(1)
         .map_err(|error| error.to_string())
@@ -229,10 +259,14 @@ fn render_document(mut document: bbcat::Document) -> Result<Rendered, String> {
 }
 
 fn texture_from_png(png: Vec<u8>) -> Result<gdk::Texture, String> {
+    // Bytes takes ownership of the Vec, and the resulting texture keeps the
+    // encoded data alive for as long as GTK needs it.
     gdk::Texture::from_bytes(&glib::Bytes::from_owned(png)).map_err(|error| error.to_string())
 }
 
 fn frame_duration(frame: &bbcat::AnimationFrame) -> Duration {
+    // DDW frames carry a native duration. ANSI frames instead record how many
+    // source bytes produced them, matching bbcat's default playback rate.
     frame.duration.unwrap_or_else(|| {
         let nanoseconds = (frame.source_bytes as u128).saturating_mul(1_000_000_000)
             / u128::from(bbcat::DEFAULT_ANIMATION_BAUD);
@@ -261,10 +295,12 @@ fn show_animation_frame(
     index: usize,
     window: glib::WeakRef<gtk4::ApplicationWindow>,
 ) -> Result<(i32, i32), String> {
+    // A callback belonging to an older file must not replace the new artwork.
     if playback.get() != generation {
         return Ok((0, 0));
     }
 
+    // Rendering only the current screen keeps the texture working set small.
     let frame = &frames[index];
     let png = bbcat::encode_screen(&frame.screen, 0, frame.screen.height)?;
     let texture = texture_from_png(png)?;
@@ -273,6 +309,8 @@ fn show_animation_frame(
     let delay = frame_duration(frame).max(Duration::from_millis(1));
     let next = (index + 1) % frames.len();
     let picture = picture.downgrade();
+    // One-shot timers allow every frame to have a different duration. The weak
+    // picture reference also stops the loop naturally when its window closes.
     glib::timeout_add_local_once(delay, move || {
         if let Some(picture) = picture.upgrade() {
             let next_window = window.clone();
@@ -292,6 +330,8 @@ fn fit_window_to_content(
     content_width: i32,
     content_height: i32,
 ) -> bool {
+    // GDK monitor geometry is in the same logical units used by GTK widget
+    // sizes, including on scaled displays.
     let titlebar_height = window
         .titlebar()
         .map(|titlebar| titlebar.measure(gtk4::Orientation::Vertical, -1).1)
@@ -330,6 +370,9 @@ fn configure_content_view(
     content_height: i32,
 ) {
     if scrolls_native_content {
+        // Native mode must request the exact texture size. Without this, the
+        // picture's aspect-ratio measurement can give the viewport a shallow
+        // scroll surface for very wide artwork.
         scroller.set_policy(gtk4::PolicyType::Automatic, gtk4::PolicyType::Automatic);
         picture.set_size_request(content_width, content_height);
         picture.set_can_shrink(false);
@@ -338,6 +381,8 @@ fn configure_content_view(
         picture.set_hexpand(false);
         picture.set_vexpand(false);
     } else {
+        // Reset the explicit request so GTK can resize the picture and let
+        // ContentFit::Contain provide aspect-preserving letterboxing.
         scroller.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Never);
         picture.set_size_request(-1, -1);
         picture.set_can_shrink(true);
@@ -358,6 +403,8 @@ fn fitted_window_size(
     const MIN_WIDTH: i32 = 320;
     const MIN_HEIGHT: i32 = 240;
 
+    // Leave a small margin around an automatically sized window. Users can
+    // still maximize it normally.
     let max_width = monitor_width.saturating_mul(9).div_euclid(10).max(1);
     let max_height = monitor_height.saturating_mul(9).div_euclid(10).max(1);
     let (needs_horizontal_scrollbar, needs_vertical_scrollbar) = required_scrollbars(
@@ -388,6 +435,8 @@ fn required_scrollbars(
     monitor_width: i32,
     monitor_height: i32,
 ) -> (bool, bool) {
+    // This mirrors the initial window cap: content beyond either usable axis
+    // stays at native resolution instead of being scaled into illegibility.
     let max_width = monitor_width.saturating_mul(9).div_euclid(10).max(1);
     let max_height = monitor_height.saturating_mul(9).div_euclid(10).max(1);
     (
