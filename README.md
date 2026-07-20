@@ -34,6 +34,12 @@ definitions used for file associations. To install them for the current user:
 make install PREFIX="$HOME/.local"
 ```
 
+Remove a Makefile-based user installation with the matching prefix:
+
+```sh
+make uninstall PREFIX="$HOME/.local"
+```
+
 The desktop entry associates the preview app with ANSI (`.ans`, `.asc`, `.diz`),
 NFO, DarkDraw (`.ddw`), ArtWorx (`.adf`), RIPscrip (`.rip`), and XBin (`.xb`,
 `.xbin`) artwork. The `update-mime-database` and `update-desktop-database`
