@@ -80,4 +80,13 @@ jobs:
             gh release create tip --repo "$GITHUB_REPOSITORY" --title "Tip build" \
               --prerelease --notes "$notes"
           fi
+
+          release_id=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/tip" --jq .id)
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases/$release_id/assets" \
+            --jq '.[] | select(.name | endswith(".deb")) | .id' |
+            while read -r asset_id; do
+              gh api --method DELETE \
+                "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
+            done
+
           gh release upload tip dist/*.deb --repo "$GITHUB_REPOSITORY" --clobber
