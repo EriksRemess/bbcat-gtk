@@ -1,0 +1,50 @@
+#!/bin/sh
+set -eu
+
+project_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$project_dir"
+
+base_version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
+commit_epoch=$(git show -s --format=%ct HEAD)
+commit_date=$(date -u -d "@$commit_epoch" +%Y%m%d%H%M%S)
+commit_short=$(git rev-parse --short=8 HEAD)
+package_version="${base_version}+git${commit_date}.${commit_short}"
+architecture=$(dpkg --print-architecture)
+
+work_dir=$(mktemp -d "${TMPDIR:-/tmp}/bbcat-gtk-deb.XXXXXX")
+trap 'rm -rf "$work_dir"' EXIT HUP INT TERM
+package_root="$work_dir/root"
+mkdir -p "$package_root/DEBIAN" "$work_dir/debian" dist
+chmod 755 "$package_root" "$package_root/DEBIAN"
+
+# Reuse the normal install layout so local installs and packages cannot drift.
+make install DESTDIR="$package_root" PREFIX=/usr
+
+# dpkg-shlibdeps derives exact GTK/GLib package names from the build system.
+# The small source control file is all it needs to resolve those dependencies.
+cat >"$work_dir/debian/control" <<EOF
+Source: bbcat-gtk
+Package: bbcat-gtk
+Architecture: any
+EOF
+dependencies=$(
+    cd "$work_dir"
+    dpkg-shlibdeps -O root/usr/bin/bbcat-gtk | sed 's/^shlibs:Depends=//'
+)
+
+cat >"$package_root/DEBIAN/control" <<EOF
+Package: bbcat-gtk
+Version: $package_version
+Section: graphics
+Priority: optional
+Architecture: $architecture
+Maintainer: Ēriks Remess <eriks@remess.lv>
+Depends: $dependencies
+Homepage: https://github.com/EriksRemess/bbcat-gtk
+Description: GTK4 demo viewer for the bbcat library
+ A small example application that renders ANSI and BBS artwork with bbcat.
+EOF
+
+output="dist/bbcat-gtk_${package_version}_${architecture}.deb"
+dpkg-deb --root-owner-group --build "$package_root" "$output"
+echo "$output"

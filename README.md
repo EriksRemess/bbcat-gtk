@@ -45,6 +45,22 @@ Packagers can stage an install without updating the host databases:
 make install DESTDIR=/tmp/bbcat-gtk-package PREFIX=/usr
 ```
 
+## Debian packages
+
+Build a package for the current machine with:
+
+```sh
+make deb
+```
+
+The package is written to `dist/`. It includes the commit date and hash in its
+version and derives its GTK runtime dependencies from the built binary.
+
+GitHub Actions builds `amd64` and `arm64` packages on every push. Each build is
+available as a workflow artifact; builds from `main` also replace the packages
+on the rolling `tip` prerelease. The `arm64` package targets current 64-bit
+Raspberry Pi OS on Raspberry Pi 4 and 5.
+
 ## How it works
 
 Input is decoded with `bbcat::decode_with_options`. Static screens are encoded

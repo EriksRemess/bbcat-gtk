@@ -5,10 +5,13 @@ CARGO ?= cargo
 BINDIR = $(DESTDIR)$(PREFIX)/bin
 DATADIR = $(DESTDIR)$(PREFIX)/share
 
-.PHONY: build install
+.PHONY: build deb install
 
 build:
 	$(CARGO) build --release --locked
+
+deb:
+	./scripts/build-deb
 
 install: build
 	install -Dm755 target/release/bbcat-gtk $(BINDIR)/bbcat-gtk

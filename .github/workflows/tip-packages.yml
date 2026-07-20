@@ -1,0 +1,81 @@
+name: Tip packages
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tip-packages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build ${{ matrix.arch }} package
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container: rust:trixie
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install --yes --no-install-recommends dpkg-dev libgtk-4-dev make pkg-config
+
+      - name: Build Debian package
+        run: make deb
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bbcat-gtk-deb-${{ matrix.arch }}
+          path: dist/*.deb
+          if-no-files-found: error
+
+  tip-release:
+    name: Update tip release
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bbcat-gtk-deb-*
+          path: dist
+          merge-multiple: true
+
+      - name: Move tip tag to this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/tip" >/dev/null 2>&1; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/tip" \
+              -f sha="$GITHUB_SHA" -F force=true >/dev/null
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref=refs/tags/tip -f sha="$GITHUB_SHA" >/dev/null
+          fi
+
+      - name: Update prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes="Automated packages for commit \`$GITHUB_SHA\`."
+          if gh release view tip --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit tip --repo "$GITHUB_REPOSITORY" --title "Tip build" \
+              --prerelease --notes "$notes"
+          else
+            gh release create tip --repo "$GITHUB_REPOSITORY" --title "Tip build" \
+              --prerelease --notes "$notes"
+          fi
+          gh release upload tip dist/*.deb --repo "$GITHUB_REPOSITORY" --clobber
