@@ -11,9 +11,9 @@ animations at `bbcat`'s default speed. The window follows the rendered content
 size up to the available monitor space. Artwork scales with the window while
 preserving its aspect ratio, with black letterboxing around unused space.
 Artwork taller or wider than the monitor instead remains at native size and
-uses vertical or horizontal scrollbars as needed. SAUCE titles, authors, and
-dates are shown in the window title when available. There are no zoom, playback,
-editing, or configuration controls.
+stays centered on any axis that fits; only the overflowing axes get scrollbars.
+SAUCE titles, authors, and dates are shown in the window title when available.
+There are no zoom, playback, editing, or configuration controls.
 
 ## Build and run
 

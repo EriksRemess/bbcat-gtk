@@ -49,6 +49,13 @@ fn show_window(app: &gtk4::Application, path: Option<&Path>) {
     // Each load receives a generation number. Old animation timers become
     // harmless as soon as a newer file increments it.
     let playback = Rc::new(Cell::new(0_u64));
+    // In native-size scrolling mode this records the artwork size. It is used
+    // below to center the non-scrolling axis within the visible viewport.
+    let native_size = Rc::new(Cell::new(None));
+    // Centering uses child coordinates instead of margins, keeping the scroll
+    // origin stable while GTK is showing or hiding scrollbars.
+    let canvas = gtk4::Fixed::builder().hexpand(true).vexpand(true).build();
+    canvas.put(&picture, 0.0, 0.0);
     // Scrollbars start disabled for aspect-fit mode and are enabled only when
     // the artwork is larger than the monitor.
     let scroller = gtk4::ScrolledWindow::builder()
@@ -57,8 +64,32 @@ fn show_window(app: &gtk4::Application, path: Option<&Path>) {
         .overlay_scrolling(false)
         .hexpand(true)
         .vexpand(true)
-        .child(&picture)
+        .child(&canvas)
         .build();
+    // Recalculate the canvas whenever resizing or scrollbar layout changes.
+    for adjustment in [scroller.hadjustment(), scroller.vadjustment()] {
+        let picture = picture.downgrade();
+        let canvas = canvas.downgrade();
+        let scroller = scroller.downgrade();
+        let native_size = native_size.clone();
+        adjustment.connect_page_size_notify(move |_| {
+            if let (Some(picture), Some(canvas), Some(scroller)) =
+                (picture.upgrade(), canvas.upgrade(), scroller.upgrade())
+            {
+                update_content_layout(&picture, &canvas, &scroller, native_size.get());
+            }
+        });
+    }
+    for property in ["width", "height"] {
+        let picture = picture.downgrade();
+        let canvas = canvas.downgrade();
+        let native_size = native_size.clone();
+        scroller.connect_notify_local(Some(property), move |scroller, _| {
+            if let (Some(picture), Some(canvas)) = (picture.upgrade(), canvas.upgrade()) {
+                update_content_layout(&picture, &canvas, scroller, native_size.get());
+            }
+        });
+    }
     let viewer = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
     viewer.add_css_class("artwork");
     viewer.append(&scroller);
@@ -84,13 +115,25 @@ fn show_window(app: &gtk4::Application, path: Option<&Path>) {
         // the complete window hierarchy alive after the window is closed.
         let window = window.downgrade();
         let picture = picture.downgrade();
+        let canvas = canvas.downgrade();
         let scroller = scroller.downgrade();
         let playback = playback.clone();
+        let native_size = native_size.clone();
         move |_| {
-            if let (Some(window), Some(picture), Some(scroller)) =
-                (window.upgrade(), picture.upgrade(), scroller.upgrade())
-            {
-                choose_file(&window, &picture, &scroller, &playback);
+            if let (Some(window), Some(picture), Some(canvas), Some(scroller)) = (
+                window.upgrade(),
+                picture.upgrade(),
+                canvas.upgrade(),
+                scroller.upgrade(),
+            ) {
+                choose_file(
+                    &window,
+                    &picture,
+                    &canvas,
+                    &scroller,
+                    &playback,
+                    &native_size,
+                );
             }
         }
     });
@@ -98,15 +141,25 @@ fn show_window(app: &gtk4::Application, path: Option<&Path>) {
     window.present();
 
     if let Some(path) = path {
-        load_file(path, &window, &picture, &scroller, &playback);
+        load_file(
+            path,
+            &window,
+            &picture,
+            &canvas,
+            &scroller,
+            &playback,
+            &native_size,
+        );
     }
 }
 
 fn choose_file(
     window: &gtk4::ApplicationWindow,
     picture: &gtk4::Picture,
+    canvas: &gtk4::Fixed,
     scroller: &gtk4::ScrolledWindow,
     playback: &Rc<Cell<u64>>,
+    native_size: &Rc<Cell<Option<(i32, i32)>>>,
 ) {
     // FileChooserNative uses the desktop's preferred chooser rather than a
     // custom GTK file-browser window.
@@ -122,13 +175,23 @@ fn choose_file(
     chooser.connect_response({
         let window = window.clone();
         let picture = picture.clone();
+        let canvas = canvas.clone();
         let scroller = scroller.clone();
         let playback = playback.clone();
+        let native_size = native_size.clone();
         move |chooser, response| {
             if response == gtk4::ResponseType::Accept
                 && let Some(path) = chooser.file().and_then(|file| file.path())
             {
-                load_file(&path, &window, &picture, &scroller, &playback);
+                load_file(
+                    &path,
+                    &window,
+                    &picture,
+                    &canvas,
+                    &scroller,
+                    &playback,
+                    &native_size,
+                );
             }
             chooser.destroy();
         }
@@ -140,8 +203,10 @@ fn load_file(
     path: &Path,
     window: &gtk4::ApplicationWindow,
     picture: &gtk4::Picture,
+    canvas: &gtk4::Fixed,
     scroller: &gtk4::ScrolledWindow,
     playback: &Rc<Cell<u64>>,
+    native_size: &Rc<Cell<Option<(i32, i32)>>>,
 ) {
     // Invalidating the previous generation stops its next timer callback from
     // scheduling another animation frame.
@@ -225,13 +290,15 @@ fn load_file(
         format!("{title} — {}", sauce_details.join(" · "))
     };
     window.set_title(Some(&title));
-    let scrolls_native_content = fit_window_to_content(window, content_size.0, content_size.1);
+    let scrollbars = fit_window_to_content(window, content_size.0, content_size.1);
     configure_content_view(
         picture,
+        canvas,
         scroller,
-        scrolls_native_content,
+        scrollbars,
         content_size.0,
         content_size.1,
+        native_size,
     );
 }
 
@@ -329,7 +396,7 @@ fn fit_window_to_content(
     window: &gtk4::ApplicationWindow,
     content_width: i32,
     content_height: i32,
-) -> bool {
+) -> (bool, bool) {
     // GDK monitor geometry is in the same logical units used by GTK widget
     // sizes, including on scaled displays.
     let titlebar_height = window
@@ -352,45 +419,127 @@ fn fit_window_to_content(
         monitor_size.1,
     );
     window.set_default_size(width, height);
-    let (horizontal, vertical) = required_scrollbars(
+    required_scrollbars(
         content_width,
         content_height,
         titlebar_height,
         monitor_size.0,
         monitor_size.1,
-    );
-    horizontal || vertical
+    )
 }
 
 fn configure_content_view(
     picture: &gtk4::Picture,
+    canvas: &gtk4::Fixed,
     scroller: &gtk4::ScrolledWindow,
-    scrolls_native_content: bool,
+    scrollbars: (bool, bool),
     content_width: i32,
     content_height: i32,
+    native_size: &Rc<Cell<Option<(i32, i32)>>>,
 ) {
-    if scrolls_native_content {
-        // Native mode must request the exact texture size. Without this, the
-        // picture's aspect-ratio measurement can give the viewport a shallow
-        // scroll surface for very wide artwork.
-        scroller.set_policy(gtk4::PolicyType::Automatic, gtk4::PolicyType::Automatic);
+    let (horizontal_scrollbar, vertical_scrollbar) = scrollbars;
+    if horizontal_scrollbar || vertical_scrollbar {
         picture.set_size_request(content_width, content_height);
         picture.set_can_shrink(false);
-        picture.set_halign(gtk4::Align::Start);
-        picture.set_valign(gtk4::Align::Start);
-        picture.set_hexpand(false);
-        picture.set_vexpand(false);
+        native_size.set(Some((content_width, content_height)));
     } else {
-        // Reset the explicit request so GTK can resize the picture and let
-        // ContentFit::Contain provide aspect-preserving letterboxing.
+        // Responsive mode disables scrolling; update_content_layout sizes the
+        // picture to the viewport for aspect-preserving ContentFit letterboxing.
         scroller.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Never);
-        picture.set_size_request(-1, -1);
+        native_size.set(None);
         picture.set_can_shrink(true);
-        picture.set_halign(gtk4::Align::Fill);
-        picture.set_valign(gtk4::Align::Fill);
-        picture.set_hexpand(true);
-        picture.set_vexpand(true);
     }
+    update_content_layout(picture, canvas, scroller, native_size.get());
+}
+
+fn update_content_layout(
+    picture: &gtk4::Picture,
+    canvas: &gtk4::Fixed,
+    scroller: &gtk4::ScrolledWindow,
+    native_size: Option<(i32, i32)>,
+) {
+    // Choose scrollbar axes ourselves. GtkFixed's changing visible child area
+    // must not make GTK invent a cross-axis scrollbar while scrolling.
+    let vertical_scrollbar = scroller.vscrollbar();
+    let horizontal_scrollbar = scroller.hscrollbar();
+
+    if let Some((content_width, content_height)) = native_size {
+        let scrollbar_width = vertical_scrollbar
+            .measure(gtk4::Orientation::Horizontal, -1)
+            .1;
+        let scrollbar_height = horizontal_scrollbar
+            .measure(gtk4::Orientation::Vertical, -1)
+            .1;
+        let scrollbars = viewport_scrollbars(
+            content_width,
+            content_height,
+            scroller.width(),
+            scroller.height(),
+            scrollbar_width,
+            scrollbar_height,
+        );
+        scroller.set_policy(
+            if scrollbars.0 {
+                gtk4::PolicyType::Automatic
+            } else {
+                gtk4::PolicyType::Never
+            },
+            if scrollbars.1 {
+                gtk4::PolicyType::Automatic
+            } else {
+                gtk4::PolicyType::Never
+            },
+        );
+        let viewport_width = scroller
+            .width()
+            .saturating_sub(if scrollbars.1 { scrollbar_width } else { 0 })
+            .max(1);
+        let viewport_height = scroller
+            .height()
+            .saturating_sub(if scrollbars.0 { scrollbar_height } else { 0 })
+            .max(1);
+        // An overflowing axis grows beyond the viewport and scrolls. A fitting
+        // axis matches the viewport and places the artwork in its center.
+        canvas.set_size_request(
+            content_width.max(viewport_width),
+            content_height.max(viewport_height),
+        );
+        picture.set_size_request(content_width, content_height);
+        canvas.move_(
+            picture,
+            f64::from(viewport_width.saturating_sub(content_width).max(0) / 2),
+            f64::from(viewport_height.saturating_sub(content_height).max(0) / 2),
+        );
+    } else {
+        // Picture performs aspect-preserving scaling within the whole viewport.
+        let viewport_width = scroller.width().max(1);
+        let viewport_height = scroller.height().max(1);
+        canvas.set_size_request(viewport_width, viewport_height);
+        picture.set_size_request(viewport_width, viewport_height);
+        canvas.move_(picture, 0.0, 0.0);
+    }
+}
+
+fn viewport_scrollbars(
+    content_width: i32,
+    content_height: i32,
+    viewport_width: i32,
+    viewport_height: i32,
+    scrollbar_width: i32,
+    scrollbar_height: i32,
+) -> (bool, bool) {
+    let mut horizontal = content_width > viewport_width;
+    let mut vertical = content_height > viewport_height;
+
+    // One scrollbar reduces the other axis. Two passes reach the stable pair
+    // without relying on GTK's child measurements during a scroll operation.
+    for _ in 0..2 {
+        horizontal |= content_width
+            > viewport_width.saturating_sub(if vertical { scrollbar_width } else { 0 });
+        vertical |= content_height
+            > viewport_height.saturating_sub(if horizontal { scrollbar_height } else { 0 });
+    }
+    (horizontal, vertical)
 }
 
 fn fitted_window_size(
@@ -460,7 +609,7 @@ fn show_error(window: &gtk4::ApplicationWindow, error: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{fitted_window_size, format_sauce_date, required_scrollbars};
+    use super::{fitted_window_size, format_sauce_date, required_scrollbars, viewport_scrollbars};
 
     #[test]
     fn fits_normal_content_exactly() {
@@ -492,6 +641,30 @@ mod tests {
         assert_eq!(
             required_scrollbars(640, 4000, 46, 1920, 1080),
             (false, true)
+        );
+    }
+
+    #[test]
+    fn does_not_add_a_cross_axis_scrollbar() {
+        assert_eq!(
+            viewport_scrollbars(6400, 640, 1920, 1080, 16, 16),
+            (true, false)
+        );
+        assert_eq!(
+            viewport_scrollbars(640, 4000, 1920, 1080, 16, 16),
+            (false, true)
+        );
+    }
+
+    #[test]
+    fn accounts_for_space_taken_by_the_first_scrollbar() {
+        assert_eq!(
+            viewport_scrollbars(6400, 1070, 1920, 1080, 16, 16),
+            (true, true)
+        );
+        assert_eq!(
+            viewport_scrollbars(1910, 4000, 1920, 1080, 16, 16),
+            (true, true)
         );
     }
 
