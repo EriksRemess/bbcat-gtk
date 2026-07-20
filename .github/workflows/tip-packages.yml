@@ -25,7 +25,7 @@ jobs:
     container: rust:trixie
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install build dependencies
         run: |
@@ -37,7 +37,7 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           make deb
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: bbcat-gtk-deb-${{ matrix.arch }}
           path: dist/*.deb
@@ -50,7 +50,7 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: bbcat-gtk-deb-*
           path: dist
